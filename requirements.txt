@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/requirements.txt
+<parameter name="command">cat /requirements.txt

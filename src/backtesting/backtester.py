@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/src/backtesting/backtester.py
+<parameter name="command">cat /src/backtesting/backtester.py

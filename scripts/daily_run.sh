@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/scripts/daily_run.sh
+<parameter name="command">cat /scripts/daily_run.sh

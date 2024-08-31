@@ -1,2 +1,3 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/data/eur_usd_historical.csv
+<parameter name="command">cat data/eur_usd_historical.csv | sed 's/<parameter name="command">.*<\/parameter>//'</parameter>
+</invoke>

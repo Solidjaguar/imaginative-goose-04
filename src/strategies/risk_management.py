@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/src/strategies/risk_management.py
+<parameter name="command">cat /src/strategies/risk_management.py

@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/data/paper_trader_state.json
+<parameter name="command">cat /data/paper_trader_state.json

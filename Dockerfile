@@ -1,2 +1,3 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/Dockerfile
+<parameter name="command">cat Dockerfile | sed 's/<parameter name="command">.*<\/parameter>//'</parameter>
+</invoke>

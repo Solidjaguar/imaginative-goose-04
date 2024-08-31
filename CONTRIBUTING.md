@@ -1,2 +1,2 @@
 <invoke name="shellExec">
-<parameter name="command">cat imaginative-goose-01/CONTRIBUTING.md
+<parameter name="command">cat /CONTRIBUTING.md
