@@ -12,48 +12,63 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def run_trading_system():
-    logger.info("Starting automated gold trading system...")
+class AutomatedGoldTradingSystem:
+    def __init__(self):
+        self.data_fetcher = DataFetcher()
+        self.data_processor = DataProcessor()
+        self.model = GoldPricePredictor()
+        self.strategy = TradingStrategy(self.model)
+        self.backtester = Backtester(self.strategy)
 
-    # Fetch and process data
-    data_fetcher = DataFetcher()
-    raw_data = data_fetcher.get_data()
+    def run(self):
+        logger.info("Starting automated gold trading system...")
 
-    data_processor = DataProcessor()
-    processed_data = data_processor.process_data(raw_data)
+        # Fetch and process data
+        raw_data = self.data_fetcher.get_data()
+        processed_data = self.data_processor.process_data(raw_data)
 
-    # Train and save the model
-    model = GoldPricePredictor()
-    model.train(processed_data)
-    model.save_model('best_model.joblib')
+        # Check if model exists, if not, train a new one
+        try:
+            self.model.load_model('best_model.joblib')
+            logger.info("Loaded existing model.")
+        except:
+            logger.info("No existing model found. Training a new model.")
+            self.model.train(processed_data)
+            self.model.save_model('best_model.joblib')
 
-    # Make predictions
-    latest_data = processed_data.iloc[-1].drop('target').to_frame().T
-    prediction = model.predict(latest_data)
-    logger.info(f"Latest prediction: {prediction[0]}")
+        # Update model with new data
+        self.model.update(processed_data)
 
-    # Apply trading strategy
-    strategy = TradingStrategy(model)
-    signal = strategy.generate_signal(latest_data)
-    logger.info(f"Trading signal: {signal}")
+        # Make predictions
+        latest_data = processed_data.iloc[-1].drop('target').to_frame().T
+        prediction = self.model.predict(latest_data)
+        logger.info(f"Latest prediction: {prediction[0]}")
 
-    # Backtesting
-    backtester = Backtester(strategy)
-    backtest_results = backtester.run_backtest(processed_data)
-    logger.info(f"Backtest results: {backtest_results}")
+        # Apply trading strategy
+        signal = self.strategy.generate_signal(latest_data)
+        logger.info(f"Trading signal: {signal}")
 
-    # Here you would typically execute the trade based on the signal
-    # This part would involve integrating with a broker's API
-    logger.info("Trade execution would happen here in a live system.")
+        # Backtesting
+        backtest_results = self.backtester.run_backtest(processed_data)
+        logger.info(f"Backtest results: {backtest_results}")
 
-    logger.info("Automated trading cycle completed.")
+        # Here you would typically execute the trade based on the signal
+        # This part would involve integrating with a broker's API
+        logger.info("Trade execution would happen here in a live system.")
+
+        # Save updated model
+        self.model.save_model('best_model.joblib')
+
+        logger.info("Automated trading cycle completed.")
 
 def main():
+    trading_system = AutomatedGoldTradingSystem()
+
     # Run the system immediately
-    run_trading_system()
+    trading_system.run()
 
     # Schedule the system to run daily at a specific time (e.g., 00:00 UTC)
-    schedule.every().day.at("00:00").do(run_trading_system)
+    schedule.every().day.at("00:00").do(trading_system.run)
 
     while True:
         schedule.run_pending()
