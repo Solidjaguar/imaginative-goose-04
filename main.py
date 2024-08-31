@@ -4,37 +4,62 @@ from src.utils.data_fetcher import DataFetcher
 from src.utils.data_processor import DataProcessor
 from src.utils.drift_detector import DriftDetector
 from src.utils.feature_analyzer import FeatureAnalyzer
+from src.utils.sentiment_analyzer import SentimentAnalyzer
+from src.utils.economic_indicators import EconomicIndicators
 from src.models.gold_price_predictor import GoldPricePredictor
 from src.strategies.rl_trading_strategy import RLTradingStrategy
 from src.backtesting.backtester import Backtester
+from src.risk_management.risk_manager import RiskManager
 import logging
 import schedule
 import time
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class AutomatedGoldTradingSystem:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         self.data_fetcher = DataFetcher()
         self.data_processor = DataProcessor()
         self.drift_detector = DriftDetector()
         self.feature_analyzer = FeatureAnalyzer()
+        self.sentiment_analyzer = SentimentAnalyzer(
+            config['news_api_key'],
+            config['twitter_api_key'],
+            config['twitter_api_secret'],
+            config['twitter_access_token'],
+            config['twitter_access_token_secret']
+        )
+        self.economic_indicators = EconomicIndicators(config['fred_api_key'])
         self.price_predictor = GoldPricePredictor()
         self.trading_strategy = RLTradingStrategy()
         self.backtester = Backtester(self.trading_strategy)
+        self.risk_manager = RiskManager(config['initial_capital'])
 
     def run(self):
         logger.info("Starting automated gold trading system...")
 
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)  # Get one year of data
+
         # Fetch and process data
-        raw_data = self.data_fetcher.get_data()
+        raw_data = self.data_fetcher.get_data(start_date, end_date)
         processed_data = self.data_processor.process_data(raw_data)
 
         # Detect drift
         if self.drift_detector.detect_drift(processed_data):
             logger.warning("Market drift detected. Adapting the system...")
             self.adapt_to_drift(processed_data)
+
+        # Get sentiment data
+        sentiment = self.sentiment_analyzer.get_combined_sentiment('gold', start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+        processed_data['sentiment'] = sentiment
+
+        # Get economic indicators
+        indicators = self.economic_indicators.get_all_indicators(start_date, end_date)
+        processed_data = pd.concat([processed_data, indicators], axis=1)
 
         # Analyze and engineer features
         self.feature_analyzer.analyze_features(processed_data.drop('target', axis=1), processed_data['target'])
@@ -69,13 +94,31 @@ class AutomatedGoldTradingSystem:
         signal = self.trading_strategy.generate_signal(rl_observation)
         logger.info(f"RL Trading signal: {signal}")
 
+        # Apply risk management
+        current_price = latest_data['Close'].values[0]
+        volatility = engineered_data['Close'].pct_change().std()
+        
+        if signal == 1:  # Buy signal
+            if self.risk_manager.can_open_position('GOLD', current_price, volatility):
+                self.risk_manager.open_position('GOLD', current_price, volatility)
+        elif signal == 2:  # Sell signal
+            self.risk_manager.close_position('GOLD', current_price)
+
+        # Check for max drawdown
+        if self.risk_manager.check_drawdown():
+            logger.warning("Max drawdown reached. Closing all positions.")
+            self.risk_manager.close_position('GOLD', current_price)
+
+        # Adjust position sizes based on current risk
+        self.risk_manager.adjust_position_sizes()
+
         # Backtesting
         backtest_results = self.backtester.run_backtest(engineered_data)
         logger.info(f"Backtest results: {backtest_results}")
 
-        # Here you would typically execute the trade based on the signal
-        # This part would involve integrating with a broker's API
-        logger.info("Trade execution would happen here in a live system.")
+        # Get risk report
+        risk_report = self.risk_manager.get_risk_report()
+        logger.info(f"Risk report: {risk_report}")
 
         # Save updated models
         self.price_predictor.save_model('best_model.joblib')
@@ -91,7 +134,17 @@ class AutomatedGoldTradingSystem:
         logger.info("System adapted to new market conditions.")
 
 def main():
-    trading_system = AutomatedGoldTradingSystem()
+    config = {
+        'news_api_key': 'your_news_api_key',
+        'twitter_api_key': 'your_twitter_api_key',
+        'twitter_api_secret': 'your_twitter_api_secret',
+        'twitter_access_token': 'your_twitter_access_token',
+        'twitter_access_token_secret': 'your_twitter_access_token_secret',
+        'fred_api_key': 'your_fred_api_key',
+        'initial_capital': 100000  # Initial capital for risk management
+    }
+
+    trading_system = AutomatedGoldTradingSystem(config)
 
     # Run the system immediately
     trading_system.run()
