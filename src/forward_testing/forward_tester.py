@@ -1,81 +1,93 @@
 import pandas as pd
 import numpy as np
-from tqdm import tqdm
-from collections import defaultdict
-import logging
+from src.strategies.rl_trading_strategy import RLTradingStrategy
+from src.risk_management.advanced_risk_manager import AdvancedRiskManager
 from src.utils.sentiment_analyzer import SentimentAnalyzer
-from src.utils.economic_indicators import EconomicIndicators
+import logging
 
 logger = logging.getLogger(__name__)
 
 class ForwardTester:
-    def __init__(self, strategy, risk_manager, sentiment_analyzer, economic_indicators, initial_capital=100000):
-        self.strategy = strategy
+    def __init__(self, trading_strategy, risk_manager, sentiment_analyzer, commission_rate=0.001, slippage_pips=2):
+        self.trading_strategy = trading_strategy
         self.risk_manager = risk_manager
         self.sentiment_analyzer = sentiment_analyzer
-        self.economic_indicators = economic_indicators
-        self.initial_capital = initial_capital
-        self.results = defaultdict(list)
+        self.results = None
+        self.commission_rate = commission_rate  # 0.1% commission per trade
+        self.slippage_pips = slippage_pips  # 2 pips slippage per trade
 
-    def run_forward_test(self, data, start_date, end_date, retrain_interval=30):
-        self.risk_manager.reset(self.initial_capital)
-        portfolio_value = self.initial_capital
+    def run_forward_test(self, data, start_date, end_date):
+        logger.info("Starting forward test...")
+        
+        # Filter data for the forward test period
+        forward_data = data[(data.index >= start_date) & (data.index <= end_date)]
+        
+        # Initialize results DataFrame
+        self.results = pd.DataFrame(index=forward_data.index, columns=['Signal', 'Position', 'Price', 'Cash', 'Holdings', 'Equity', 'Returns'])
+        
         position = 0
-        last_train_date = None
-
-        for date, row in tqdm(data.loc[start_date:end_date].iterrows(), total=len(data.loc[start_date:end_date])):
-            # Retrain the strategy periodically
-            if last_train_date is None or (date - last_train_date).days >= retrain_interval:
-                train_data = data.loc[:date].tail(365)  # Use last year's data for training
-                self.strategy.train(train_data)
-                last_train_date = date
-                logger.info(f"Retrained strategy on {date}")
-
-            # Get sentiment and economic indicators for the current date
-            sentiment = self.sentiment_analyzer.get_combined_sentiment('gold', date, date)
-            indicators = self.economic_indicators.get_all_indicators(date, date)
-
-            # Combine all features
-            features = pd.concat([row.to_frame().T, pd.Series([sentiment], index=['sentiment']), indicators], axis=1)
-
-            # Generate trading signal
-            signal = self.strategy.generate_signal(features.values[0])
-
+        entry_price = 0
+        cash = self.risk_manager.initial_capital
+        
+        for i, (index, row) in enumerate(forward_data.iterrows()):
+            # Get trading signal
+            signal = self.trading_strategy.generate_signal(row.values)
+            
             # Apply risk management
-            current_price = row['Close']
-            volatility = data['Close'].pct_change().rolling(window=20).std().iloc[-1]
-
-            if signal == 1 and position == 0:  # Buy signal
-                if self.risk_manager.can_open_position('GOLD', current_price, volatility):
-                    position = self.risk_manager.open_position('GOLD', current_price, volatility)
-            elif signal == 2 and position != 0:  # Sell signal
-                self.risk_manager.close_position('GOLD', current_price)
-                position = 0
-
-            # Update portfolio value
-            portfolio_value = self.risk_manager.current_capital + (position * current_price)
-
+            max_position_size = self.risk_manager.get_position_size(cash, row['Close'])
+            
+            # Get sentiment
+            sentiment = self.sentiment_analyzer.get_sentiment('gold', index.strftime('%Y-%m-%d'))
+            
+            # Adjust signal based on sentiment (simple example, can be more sophisticated)
+            if sentiment < -0.5 and signal == 1:  # Very negative sentiment, don't buy
+                signal = 0
+            elif sentiment > 0.5 and signal == -1:  # Very positive sentiment, don't sell
+                signal = 0
+            
+            # Execute trades
+            if signal == 1 and position <= 0:  # Buy signal
+                trade_size = min(max_position_size, abs(position))
+                slippage = self.slippage_pips * 0.0001 * row['Close']  # Convert pips to price
+                execution_price = row['Close'] + slippage
+                commission = trade_size * execution_price * self.commission_rate
+                position += trade_size
+                cash -= trade_size * execution_price + commission
+                entry_price = execution_price
+            elif signal == -1 and position >= 0:  # Sell signal
+                trade_size = min(max_position_size, abs(position))
+                slippage = self.slippage_pips * 0.0001 * row['Close']  # Convert pips to price
+                execution_price = row['Close'] - slippage
+                commission = trade_size * execution_price * self.commission_rate
+                position -= trade_size
+                cash += trade_size * execution_price - commission
+                entry_price = execution_price
+            
+            # Calculate holdings and equity
+            holdings = position * row['Close']
+            equity = cash + holdings
+            
+            # Calculate returns
+            returns = 0 if i == 0 else (equity - self.results.iloc[i-1]['Equity']) / self.results.iloc[i-1]['Equity']
+            
             # Store results
-            self.results['date'].append(date)
-            self.results['portfolio_value'].append(portfolio_value)
-            self.results['position'].append(position)
-            self.results['price'].append(current_price)
-            self.results['signal'].append(signal)
-
-        return pd.DataFrame(self.results)
+            self.results.loc[index] = [signal, position, row['Close'], cash, holdings, equity, returns]
+        
+        logger.info("Forward test completed.")
+        return self.results
 
     def calculate_metrics(self):
-        df = pd.DataFrame(self.results)
-        df['returns'] = df['portfolio_value'].pct_change()
-
-        total_return = (df['portfolio_value'].iloc[-1] - self.initial_capital) / self.initial_capital
-        sharpe_ratio = np.sqrt(252) * df['returns'].mean() / df['returns'].std()
-        max_drawdown = (df['portfolio_value'] / df['portfolio_value'].cummax() - 1).min()
-
+        if self.results is None:
+            raise ValueError("No forward test results available. Run forward test first.")
+        
+        total_return = (self.results['Equity'].iloc[-1] - self.results['Equity'].iloc[0]) / self.results['Equity'].iloc[0]
+        sharpe_ratio = np.sqrt(252) * self.results['Returns'].mean() / self.results['Returns'].std()
+        max_drawdown = (self.results['Equity'] / self.results['Equity'].cummax() - 1).min()
+        
         return {
-            'total_return': total_return,
-            'sharpe_ratio': sharpe_ratio,
-            'max_drawdown': max_drawdown
+            'Total Return': total_return,
+            'Sharpe Ratio': sharpe_ratio,
+            'Max Drawdown': max_drawdown
         }
 
-# You can add more forward testing methods here as needed
+# You can add more forward testing functionality here as needed
