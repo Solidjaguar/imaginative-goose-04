@@ -7,11 +7,13 @@ from src.utils.feature_analyzer import FeatureAnalyzer
 from src.utils.sentiment_analyzer import SentimentAnalyzer
 from src.utils.economic_indicators import EconomicIndicators
 from src.utils.news_researcher import NewsResearcher
+from src.utils.advanced_news_analyzer import AdvancedNewsAnalyzer
 from src.models.gold_price_predictor import GoldPricePredictor
 from src.strategies.rl_trading_strategy import RLTradingStrategy
 from src.backtesting.advanced_backtester import AdvancedBacktester
 from src.forward_testing.forward_tester import ForwardTester
 from src.risk_management.risk_manager import RiskManager
+from src.optimization.hyperparameter_optimizer import HyperparameterOptimizer
 import logging
 import schedule
 import time
@@ -36,6 +38,7 @@ class AutomatedGoldTradingSystem:
         )
         self.economic_indicators = EconomicIndicators(config['fred_api_key'])
         self.news_researcher = NewsResearcher(config['news_api_key'])
+        self.advanced_news_analyzer = AdvancedNewsAnalyzer()
         self.price_predictor = GoldPricePredictor()
         self.trading_strategy = RLTradingStrategy()
         self.risk_manager = RiskManager(config['initial_capital'])
@@ -43,6 +46,10 @@ class AutomatedGoldTradingSystem:
                                              self.sentiment_analyzer, self.economic_indicators)
         self.forward_tester = ForwardTester(self.trading_strategy, self.risk_manager, 
                                             self.sentiment_analyzer, self.economic_indicators)
+        self.hyperparameter_optimizer = HyperparameterOptimizer(
+            self.price_predictor, self.trading_strategy, self.risk_manager,
+            self.sentiment_analyzer, self.economic_indicators
+        )
 
     def run(self):
         logger.info("Starting automated gold trading system...")
@@ -66,6 +73,9 @@ class AutomatedGoldTradingSystem:
         # Combine all data
         full_data = pd.concat([processed_data, pd.Series(sentiment, name='sentiment'), indicators], axis=1)
 
+        # Optimize hyperparameters
+        self.optimize_hyperparameters(full_data)
+
         # Run backtesting
         backtest_results = self.backtester.run_backtest(full_data, start_date, end_date - timedelta(days=30))
         backtest_metrics = self.backtester.calculate_metrics()
@@ -75,10 +85,11 @@ class AutomatedGoldTradingSystem:
         best_trades = self.backtester.get_best_trades(n=5)
         logger.info(f"Best trades from backtesting: {best_trades}")
 
-        # Research news around best trades
+        # Research and analyze news around best trades
         news_df = self.news_researcher.analyze_news_for_trades(best_trades)
-        summarized_news = self.news_researcher.summarize_news(news_df)
-        logger.info(f"Summarized news for best trades: {summarized_news}")
+        analyzed_news = self.advanced_news_analyzer.analyze_news(news_df)
+        news_summary = self.advanced_news_analyzer.summarize_analysis(analyzed_news)
+        logger.info(f"Advanced news analysis summary: {news_summary}")
 
         # Run forward testing
         forward_test_results = self.forward_tester.run_forward_test(full_data, end_date - timedelta(days=30), end_date)
@@ -130,6 +141,27 @@ class AutomatedGoldTradingSystem:
         self.price_predictor.train(data, force=True)
         self.trading_strategy.train(data)
         logger.info("System adapted to new market conditions.")
+
+    def optimize_hyperparameters(self, data):
+        logger.info("Starting hyperparameter optimization...")
+        
+        # Optimize price predictor
+        X = data.drop('target', axis=1)
+        y = data['target']
+        param_distributions = {
+            'n_estimators': [100, 200, 300, 400, 500],
+            'max_depth': [3, 4, 5, 6, 7],
+            'learning_rate': [0.01, 0.1, 0.2, 0.3]
+        }
+        self.price_predictor = self.hyperparameter_optimizer.optimize_price_predictor(X, y, param_distributions)
+
+        # Optimize trading strategy
+        self.hyperparameter_optimizer.optimize_trading_strategy(data)
+
+        # Optimize risk manager
+        self.hyperparameter_optimizer.optimize_risk_manager(data)
+
+        logger.info("Hyperparameter optimization completed.")
 
 def main():
     config = {
