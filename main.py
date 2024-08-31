@@ -6,9 +6,11 @@ from src.utils.drift_detector import DriftDetector
 from src.utils.feature_analyzer import FeatureAnalyzer
 from src.utils.sentiment_analyzer import SentimentAnalyzer
 from src.utils.economic_indicators import EconomicIndicators
+from src.utils.news_researcher import NewsResearcher
 from src.models.gold_price_predictor import GoldPricePredictor
 from src.strategies.rl_trading_strategy import RLTradingStrategy
-from src.backtesting.backtester import Backtester
+from src.backtesting.advanced_backtester import AdvancedBacktester
+from src.forward_testing.forward_tester import ForwardTester
 from src.risk_management.risk_manager import RiskManager
 import logging
 import schedule
@@ -33,16 +35,20 @@ class AutomatedGoldTradingSystem:
             config['twitter_access_token_secret']
         )
         self.economic_indicators = EconomicIndicators(config['fred_api_key'])
+        self.news_researcher = NewsResearcher(config['news_api_key'])
         self.price_predictor = GoldPricePredictor()
         self.trading_strategy = RLTradingStrategy()
-        self.backtester = Backtester(self.trading_strategy)
         self.risk_manager = RiskManager(config['initial_capital'])
+        self.backtester = AdvancedBacktester(self.trading_strategy, self.risk_manager, 
+                                             self.sentiment_analyzer, self.economic_indicators)
+        self.forward_tester = ForwardTester(self.trading_strategy, self.risk_manager, 
+                                            self.sentiment_analyzer, self.economic_indicators)
 
     def run(self):
         logger.info("Starting automated gold trading system...")
 
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)  # Get one year of data
+        start_date = end_date - timedelta(days=365*2)  # Get two years of data
 
         # Fetch and process data
         raw_data = self.data_fetcher.get_data(start_date, end_date)
@@ -53,50 +59,46 @@ class AutomatedGoldTradingSystem:
             logger.warning("Market drift detected. Adapting the system...")
             self.adapt_to_drift(processed_data)
 
-        # Get sentiment data
+        # Get sentiment data and economic indicators
         sentiment = self.sentiment_analyzer.get_combined_sentiment('gold', start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-        processed_data['sentiment'] = sentiment
-
-        # Get economic indicators
         indicators = self.economic_indicators.get_all_indicators(start_date, end_date)
-        processed_data = pd.concat([processed_data, indicators], axis=1)
 
-        # Analyze and engineer features
-        self.feature_analyzer.analyze_features(processed_data.drop('target', axis=1), processed_data['target'])
-        selected_features = self.feature_analyzer.select_features(processed_data.drop('target', axis=1))
-        engineered_data = self.feature_analyzer.engineer_features(selected_features)
-        engineered_data['target'] = processed_data['target']
+        # Combine all data
+        full_data = pd.concat([processed_data, pd.Series(sentiment, name='sentiment'), indicators], axis=1)
+
+        # Run backtesting
+        backtest_results = self.backtester.run_backtest(full_data, start_date, end_date - timedelta(days=30))
+        backtest_metrics = self.backtester.calculate_metrics()
+        logger.info(f"Backtest metrics: {backtest_metrics}")
+
+        # Get best trades from backtesting
+        best_trades = self.backtester.get_best_trades(n=5)
+        logger.info(f"Best trades from backtesting: {best_trades}")
+
+        # Research news around best trades
+        news_df = self.news_researcher.analyze_news_for_trades(best_trades)
+        summarized_news = self.news_researcher.summarize_news(news_df)
+        logger.info(f"Summarized news for best trades: {summarized_news}")
+
+        # Run forward testing
+        forward_test_results = self.forward_tester.run_forward_test(full_data, end_date - timedelta(days=30), end_date)
+        forward_test_metrics = self.forward_tester.calculate_metrics()
+        logger.info(f"Forward test metrics: {forward_test_metrics}")
 
         # Train or update price predictor
-        try:
-            self.price_predictor.load_model('best_model.joblib')
-            logger.info("Loaded existing price predictor model.")
-        except:
-            logger.info("No existing price predictor model found. Training a new model.")
-            self.price_predictor.train(engineered_data)
-
-        self.price_predictor.update(engineered_data)
-
-        # Train or update RL trading strategy
-        try:
-            self.trading_strategy.load_model('rl_model.zip')
-            logger.info("Loaded existing RL trading strategy model.")
-        except:
-            logger.info("No existing RL trading strategy model found. Training a new model.")
-            self.trading_strategy.train(engineered_data)
+        self.price_predictor.train(full_data)
 
         # Make predictions and generate trading signal
-        latest_data = engineered_data.iloc[-1].drop('target').to_frame().T
+        latest_data = full_data.iloc[-1].to_frame().T
         prediction = self.price_predictor.predict(latest_data)
         logger.info(f"Latest price prediction: {prediction[0]}")
 
-        rl_observation = latest_data.values[0]
-        signal = self.trading_strategy.generate_signal(rl_observation)
+        signal = self.trading_strategy.generate_signal(latest_data.values[0])
         logger.info(f"RL Trading signal: {signal}")
 
         # Apply risk management
         current_price = latest_data['Close'].values[0]
-        volatility = engineered_data['Close'].pct_change().std()
+        volatility = full_data['Close'].pct_change().std()
         
         if signal == 1:  # Buy signal
             if self.risk_manager.can_open_position('GOLD', current_price, volatility):
@@ -111,10 +113,6 @@ class AutomatedGoldTradingSystem:
 
         # Adjust position sizes based on current risk
         self.risk_manager.adjust_position_sizes()
-
-        # Backtesting
-        backtest_results = self.backtester.run_backtest(engineered_data)
-        logger.info(f"Backtest results: {backtest_results}")
 
         # Get risk report
         risk_report = self.risk_manager.get_risk_report()
