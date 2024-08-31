@@ -14,6 +14,7 @@ from src.forward_testing.forward_tester import ForwardTester
 from src.risk_management.advanced_risk_manager import AdvancedRiskManager
 from src.optimization.hyperparameter_optimizer import HyperparameterOptimizer
 from src.utils.model_versioner import ModelVersioner
+from src.utils.trading212_client import Trading212Client
 import logging
 import schedule
 import time
@@ -52,6 +53,8 @@ class AdvancedGoldTradingSystem:
         self.model_versioner = ModelVersioner()
         self.adaptation_counter = 0
         self.max_adaptations = 5  # Maximum number of adaptations before full retraining
+        self.trading212_client = Trading212Client(config['trading212_api_key'], config['trading212_account_id'])
+        self.confidence_threshold = 0.90  # 90% confidence threshold for live trading
 
     def run(self):
         logger.info("Starting advanced gold trading system...")
@@ -137,21 +140,31 @@ class AdvancedGoldTradingSystem:
         
         logger.info(f"Final trading signal: {final_signal}")
 
+        # Calculate prediction confidence
+        confidence = self.calculate_confidence(ensemble_prediction, best_model_prediction)
+        logger.info(f"Prediction confidence: {confidence:.2f}")
+
+        # Get account information
+        account_info = self.trading212_client.get_account_info()
+        available_balance = account_info['balance']
+        logger.info(f"Available balance: {available_balance}")
+
+        # Execute live trade if confidence is above threshold
+        if confidence >= self.confidence_threshold:
+            self.execute_live_trade(final_signal, available_balance, current_price)
+        else:
+            logger.info(f"Confidence ({confidence:.2f}) below threshold. No trade executed.")
+
         # Apply advanced risk management
         current_price = latest_data['Close'].values[0]
         volatility = processed_data['Close'].pct_change().rolling(window=20).std().iloc[-1]
         
         self.risk_manager.update_returns(processed_data['Close'].pct_change())
 
-        if final_signal == 1:  # Buy signal
-            self.risk_manager.open_position('GOLD', current_price, volatility)
-        elif final_signal == -1:  # Sell signal
-            self.risk_manager.close_position('GOLD', current_price)
-
         # Check for max drawdown
         if self.risk_manager.check_drawdown():
             logger.warning("Max drawdown reached. Closing all positions.")
-            self.risk_manager.close_position('GOLD', current_price)
+            self.close_all_positions()
 
         # Adjust position sizes based on current risk
         self.risk_manager.adjust_position_sizes()
@@ -217,6 +230,44 @@ class AdvancedGoldTradingSystem:
 
         logger.info("Hyperparameter optimization completed.")
 
+    def calculate_confidence(self, ensemble_prediction, best_model_prediction):
+        # This is a simple confidence calculation. You may want to use a more sophisticated method.
+        difference = abs(ensemble_prediction - best_model_prediction)
+        max_pred = max(ensemble_prediction, best_model_prediction)
+        confidence = 1 - (difference / max_pred)
+        return confidence[0]  # Return scalar value
+
+    def execute_live_trade(self, signal, available_balance, current_price):
+        instrument = "GOLD"
+        quantity = self.calculate_position_size(available_balance, current_price)
+        
+        if signal == 1:  # Buy signal
+            order = self.trading212_client.place_order(instrument, quantity, "BUY", "MARKET")
+            logger.info(f"Buy order placed: {order}")
+        elif signal == -1:  # Sell signal
+            order = self.trading212_client.place_order(instrument, quantity, "SELL", "MARKET")
+            logger.info(f"Sell order placed: {order}")
+        else:
+            logger.info("No trade signal. Holding current position.")
+
+    def calculate_position_size(self, available_balance, current_price):
+        # Implement your position sizing logic here
+        # This is a simple example, you should use a more sophisticated method
+        max_risk_per_trade = 0.02  # 2% risk per trade
+        position_size = (available_balance * max_risk_per_trade) / current_price
+        return position_size
+
+    def close_all_positions(self):
+        positions = self.trading212_client.get_positions()
+        for position in positions:
+            self.trading212_client.place_order(
+                position['instrument'],
+                position['quantity'],
+                "SELL" if position['side'] == "BUY" else "BUY",
+                "MARKET"
+            )
+        logger.info("All positions closed.")
+
 def main():
     config = {
         'alpha_vantage_api_key': 'your_alpha_vantage_api_key',
@@ -225,7 +276,9 @@ def main():
         'twitter_api_secret': 'your_twitter_api_secret',
         'twitter_access_token': 'your_twitter_access_token',
         'twitter_access_token_secret': 'your_twitter_access_token_secret',
-        'initial_capital': 100000  # Initial capital for risk management
+        'initial_capital': 100000,  # Initial capital for risk management
+        'trading212_api_key': 'your_trading212_api_key',
+        'trading212_account_id': 'your_trading212_account_id'
     }
 
     trading_system = AdvancedGoldTradingSystem(config)
@@ -242,3 +295,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# You can add more main script logic here as needed
