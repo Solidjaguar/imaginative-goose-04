@@ -16,6 +16,9 @@ from src.optimization.hyperparameter_optimizer import HyperparameterOptimizer
 from src.utils.model_versioner import ModelVersioner
 from src.utils.trading212_client import Trading212Client
 from src.utils.dynamic_trade_adjuster import DynamicTradeAdjuster
+from src.utils.liquidity_estimator import LiquidityEstimator
+from src.optimization.portfolio_optimizer import PortfolioOptimizer
+from src.models.execution_quality_predictor import ExecutionQualityPredictor
 import logging
 import schedule
 import time
@@ -61,6 +64,9 @@ class AdvancedGoldTradingSystem:
             initial_slippage_pips=config['initial_slippage_pips'],
             initial_internet_delay=config['initial_internet_delay']
         )
+        self.liquidity_estimator = LiquidityEstimator()
+        self.portfolio_optimizer = PortfolioOptimizer(risk_free_rate=config['risk_free_rate'])
+        self.execution_quality_predictor = ExecutionQualityPredictor()
         self.confidence_threshold = 0.90  # 90% confidence threshold for live trading
         self.performance_window = 30  # Number of days to consider for performance-based adjustments
 
@@ -73,6 +79,20 @@ class AdvancedGoldTradingSystem:
         # Fetch and process data
         raw_data = self.data_fetcher.fetch_all_data(start_date, end_date)
         processed_data = self.feature_engineer.engineer_features(raw_data)
+
+        # Train liquidity estimator
+        self.liquidity_estimator.train(processed_data)
+
+        # Estimate liquidity
+        liquidity_estimate = self.liquidity_estimator.estimate_liquidity(processed_data.tail(1))
+        logger.info(f"Current liquidity estimate: {liquidity_estimate}")
+
+        # Train execution quality predictor
+        self.execution_quality_predictor.train(processed_data)
+
+        # Predict execution quality
+        execution_quality = self.execution_quality_predictor.predict_execution_quality(processed_data.tail(1))
+        logger.info(f"Predicted execution quality: {execution_quality}")
 
         # Calculate current volatility
         current_volatility = processed_data['Close'].pct_change().rolling(window=20).std().iloc[-1]
@@ -129,6 +149,11 @@ class AdvancedGoldTradingSystem:
         forward_test_metrics = self.forward_tester.calculate_metrics()
         logger.info(f"Forward test metrics: {forward_test_metrics}")
 
+        # Optimize portfolio
+        returns = processed_data['Close'].pct_change().dropna()
+        optimal_weights = self.portfolio_optimizer.optimize_sharpe_ratio(returns.to_frame('GOLD'))
+        logger.info(f"Optimal portfolio weights: {optimal_weights}")
+
         # Make predictions and generate trading signal
         latest_data = processed_data.iloc[-1].to_frame().T
         X_latest = latest_data.drop(['Close'], axis=1)
@@ -165,7 +190,7 @@ class AdvancedGoldTradingSystem:
 
         # Execute live trade if confidence is above threshold
         if confidence >= self.confidence_threshold:
-            self.execute_live_trade(final_signal, available_balance, current_volatility, processed_data['Close'].iloc[-1])
+            self.execute_live_trade(final_signal, available_balance, current_volatility, processed_data['Close'].iloc[-1], liquidity_estimate, execution_quality)
         else:
             logger.info(f"Confidence ({confidence:.2f}) below threshold. No trade executed.")
 
@@ -182,31 +207,37 @@ class AdvancedGoldTradingSystem:
         self.model_versioner.save_model(self.ensemble_predictor, 'ensemble_model')
         self.model_versioner.save_model(best_model, 'best_model')
         self.model_versioner.save_model(self.trading_strategy, 'rl_model')
+        self.model_versioner.save_model(self.liquidity_estimator, 'liquidity_estimator')
+        self.model_versioner.save_model(self.execution_quality_predictor, 'execution_quality_predictor')
 
         logger.info("Advanced trading cycle completed.")
 
-    def execute_live_trade(self, signal, available_balance, current_volatility, current_price):
+    def execute_live_trade(self, signal, available_balance, current_volatility, current_price, liquidity_estimate, execution_quality):
         instrument = "GOLD"
         
-        # Dynamically adjust slippage based on current market conditions
-        current_liquidity = self.estimate_liquidity()  # You need to implement this method
-        adjusted_slippage = self.dynamic_adjuster.adjust_slippage(current_volatility, current_liquidity)
+        # Dynamically adjust slippage based on current market conditions and predicted execution quality
+        adjusted_slippage = self.dynamic_adjuster.adjust_slippage(current_volatility, liquidity_estimate)
+        predicted_slippage = execution_quality['predicted_slippage']
+        final_slippage = (adjusted_slippage + predicted_slippage) / 2  # Average of both estimates
         
         # Measure and adjust internet delay
         measured_delay = self.dynamic_adjuster.measure_internet_delay()
+        predicted_execution_time = execution_quality['predicted_execution_time']
+        final_delay = max(measured_delay, predicted_execution_time)  # Use the larger of the two
         
-        # Calculate position size based on current volatility and risk profile
+        # Calculate position size based on current volatility, risk profile, and liquidity
         position_size = self.risk_manager.calculate_position_size(instrument, current_price, current_volatility)
+        position_size = min(position_size, liquidity_estimate * 0.1)  # Limit position size to 10% of estimated liquidity
         
         if signal == 1:  # Buy signal
             # Simulate internet delay
-            time.sleep(measured_delay)
+            time.sleep(final_delay)
             
             # Fetch latest price to account for potential price changes during delay
             latest_price = self.trading212_client.get_latest_price(instrument)
             
             # Apply adjusted slippage
-            execution_price = latest_price + (adjusted_slippage * 0.0001 * latest_price)
+            execution_price = latest_price + (final_slippage * 0.0001 * latest_price)
             
             # Place the order
             order = self.trading212_client.place_order(instrument, position_size, "BUY", "MARKET")
@@ -214,61 +245,29 @@ class AdvancedGoldTradingSystem:
             
             # Log the difference between expected and actual execution price
             actual_execution_price = order['executed_price']  # Assume this is provided by Trading212
-            avg_slippage = self.dynamic_adjuster.log_slippage(execution_price, actual_execution_price)
-            logger.info(f"Average slippage: {avg_slippage:.2f} pips")
+            actual_slippage = (actual_execution_price - latest_price) / (0.0001 * latest_price)
+            logger.info(f"Expected slippage: {final_slippage:.2f} pips, Actual slippage: {actual_slippage:.2f} pips")
             
             # Update risk manager
             self.risk_manager.update_position(instrument, position_size, actual_execution_price)
         
         elif signal == -1:  # Sell signal
             # Similar process for sell orders
-            time.sleep(measured_delay)
+            time.sleep(final_delay)
             latest_price = self.trading212_client.get_latest_price(instrument)
-            execution_price = latest_price - (adjusted_slippage * 0.0001 * latest_price)
+            execution_price = latest_price - (final_slippage * 0.0001 * latest_price)
             order = self.trading212_client.place_order(instrument, position_size, "SELL", "MARKET")
             logger.info(f"Sell order placed: {order}")
             actual_execution_price = order['executed_price']
-            avg_slippage = self.dynamic_adjuster.log_slippage(execution_price, actual_execution_price)
-            logger.info(f"Average slippage: {avg_slippage:.2f} pips")
+            actual_slippage = (latest_price - actual_execution_price) / (0.0001 * latest_price)
+            logger.info(f"Expected slippage: {final_slippage:.2f} pips, Actual slippage: {actual_slippage:.2f} pips")
             self.risk_manager.update_position(instrument, -position_size, actual_execution_price)
         
         else:
             logger.info("No trade signal. Holding current position.")
 
-    def adjust_trading_parameters(self, data):
-        # Calculate recent performance
-        recent_returns = data['Close'].pct_change().tail(self.performance_window)
-        recent_sharpe = np.sqrt(252) * recent_returns.mean() / recent_returns.std()
-        
-        # Adjust confidence threshold based on recent performance
-        if recent_sharpe > 1.5:
-            self.confidence_threshold = max(0.85, self.confidence_threshold - 0.01)
-        elif recent_sharpe < 0.5:
-            self.confidence_threshold = min(0.95, self.confidence_threshold + 0.01)
-        
-        # Adjust trading frequency
-        if recent_sharpe > 2:
-            self.config['trading_frequency'] = 'high'
-        elif recent_sharpe < 0:
-            self.config['trading_frequency'] = 'low'
-        else:
-            self.config['trading_frequency'] = 'medium'
-        
-        logger.info(f"Adjusted confidence threshold: {self.confidence_threshold:.2f}")
-        logger.info(f"Adjusted trading frequency: {self.config['trading_frequency']}")
-
-    def reduce_positions(self):
-        for instrument, position in self.risk_manager.positions.items():
-            if position['size'] > 0:
-                reduction_size = position['size'] * 0.5  # Reduce position by 50%
-                order = self.trading212_client.place_order(instrument, reduction_size, "SELL", "MARKET")
-                logger.info(f"Reducing position: Sold {reduction_size} of {instrument}")
-                self.risk_manager.update_position(instrument, -reduction_size, order['executed_price'])
-
-    def estimate_liquidity(self):
-        # This is a placeholder. In a real implementation, you would estimate liquidity
-        # based on factors like trading volume, bid-ask spread, etc.
-        return 1.0
+        # Update execution quality predictor with actual results
+        self.execution_quality_predictor.update_model(latest_price, actual_execution_price, final_delay)
 
     # ... (other methods remain the same)
 
@@ -286,7 +285,8 @@ def main():
         'chromedriver_path': '/path/to/chromedriver',
         'initial_slippage_pips': 2,
         'initial_internet_delay': 0.5,
-        'trading_frequency': 'medium'  # Can be 'low', 'medium', or 'high'
+        'trading_frequency': 'medium',  # Can be 'low', 'medium', or 'high'
+        'risk_free_rate': 0.02,  # 2% risk-free rate for portfolio optimization
     }
 
     trading_system = AdvancedGoldTradingSystem(config)
