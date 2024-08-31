@@ -19,6 +19,7 @@ from src.utils.dynamic_trade_adjuster import DynamicTradeAdjuster
 from src.utils.liquidity_estimator import LiquidityEstimator
 from src.optimization.portfolio_optimizer import PortfolioOptimizer
 from src.models.execution_quality_predictor import ExecutionQualityPredictor
+from src.visualization.advanced_visualizer import AdvancedVisualizer
 import logging
 import schedule
 import time
@@ -69,6 +70,9 @@ class AdvancedGoldTradingSystem:
         self.execution_quality_predictor = ExecutionQualityPredictor()
         self.confidence_threshold = 0.90  # 90% confidence threshold for live trading
         self.performance_window = 30  # Number of days to consider for performance-based adjustments
+        self.processed_data = None
+        self.execution_history = pd.DataFrame(columns=['liquidity_estimate', 'actual_slippage', 'execution_time'])
+        self.visualizer = AdvancedVisualizer(self)
 
     def run(self):
         logger.info("Starting advanced gold trading system...")
@@ -78,45 +82,45 @@ class AdvancedGoldTradingSystem:
 
         # Fetch and process data
         raw_data = self.data_fetcher.fetch_all_data(start_date, end_date)
-        processed_data = self.feature_engineer.engineer_features(raw_data)
+        self.processed_data = self.feature_engineer.engineer_features(raw_data)
 
         # Train liquidity estimator
-        self.liquidity_estimator.train(processed_data)
+        self.liquidity_estimator.train(self.processed_data)
 
         # Estimate liquidity
-        liquidity_estimate = self.liquidity_estimator.estimate_liquidity(processed_data.tail(1))
+        liquidity_estimate = self.liquidity_estimator.estimate_liquidity(self.processed_data.tail(1))
         logger.info(f"Current liquidity estimate: {liquidity_estimate}")
 
         # Train execution quality predictor
-        self.execution_quality_predictor.train(processed_data)
+        self.execution_quality_predictor.train(self.processed_data)
 
         # Predict execution quality
-        execution_quality = self.execution_quality_predictor.predict_execution_quality(processed_data.tail(1))
+        execution_quality = self.execution_quality_predictor.predict_execution_quality(self.processed_data.tail(1))
         logger.info(f"Predicted execution quality: {execution_quality}")
 
         # Calculate current volatility
-        current_volatility = processed_data['Close'].pct_change().rolling(window=20).std().iloc[-1]
+        current_volatility = self.processed_data['Close'].pct_change().rolling(window=20).std().iloc[-1]
 
         # Detect drift
-        if self.drift_detector.detect_drift(processed_data):
+        if self.drift_detector.detect_drift(self.processed_data):
             logger.warning("Market drift detected. Adapting the system...")
-            self.adapt_to_drift(processed_data)
+            self.adapt_to_drift(self.processed_data)
 
         # Get sentiment data
         sentiment = self.sentiment_analyzer.get_combined_sentiment('gold', start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-        processed_data['sentiment'] = sentiment
+        self.processed_data['sentiment'] = sentiment
 
         # Detect patterns
-        patterns = self.pattern_detector.detect_patterns(processed_data)
-        processed_data = pd.concat([processed_data, patterns], axis=1)
+        patterns = self.pattern_detector.detect_patterns(self.processed_data)
+        self.processed_data = pd.concat([self.processed_data, patterns], axis=1)
 
         # Generate pattern-based signals
         pattern_signals = self.pattern_detector.generate_trading_signals(patterns, risk_tolerance='low')
-        processed_data['pattern_signal'] = pattern_signals
+        self.processed_data['pattern_signal'] = pattern_signals
 
         # Prepare data for prediction
-        X = processed_data.drop(['Close'], axis=1)
-        y = processed_data['Close']
+        X = self.processed_data.drop(['Close'], axis=1)
+        y = self.processed_data['Close']
 
         # Automatic model selection
         best_model, best_params = self.auto_model_selector.select_best_model(X, y)
@@ -127,10 +131,10 @@ class AdvancedGoldTradingSystem:
         self.ensemble_predictor.train(X, y)
 
         # Optimize hyperparameters
-        self.optimize_hyperparameters(processed_data)
+        self.optimize_hyperparameters(self.processed_data)
 
         # Run backtesting
-        backtest_results = self.backtester.run_backtest(processed_data, start_date, end_date - timedelta(days=30))
+        backtest_results = self.backtester.run_backtest(self.processed_data, start_date, end_date - timedelta(days=30))
         backtest_metrics = self.backtester.calculate_metrics()
         logger.info(f"Backtest metrics: {backtest_metrics}")
 
@@ -145,17 +149,17 @@ class AdvancedGoldTradingSystem:
         logger.info(f"Advanced news analysis summary: {news_summary}")
 
         # Run forward testing
-        forward_test_results = self.forward_tester.run_forward_test(processed_data, end_date - timedelta(days=30), end_date)
+        forward_test_results = self.forward_tester.run_forward_test(self.processed_data, end_date - timedelta(days=30), end_date)
         forward_test_metrics = self.forward_tester.calculate_metrics()
         logger.info(f"Forward test metrics: {forward_test_metrics}")
 
         # Optimize portfolio
-        returns = processed_data['Close'].pct_change().dropna()
+        returns = self.processed_data['Close'].pct_change().dropna()
         optimal_weights = self.portfolio_optimizer.optimize_sharpe_ratio(returns.to_frame('GOLD'))
         logger.info(f"Optimal portfolio weights: {optimal_weights}")
 
         # Make predictions and generate trading signal
-        latest_data = processed_data.iloc[-1].to_frame().T
+        latest_data = self.processed_data.iloc[-1].to_frame().T
         X_latest = latest_data.drop(['Close'], axis=1)
         
         ensemble_prediction = self.ensemble_predictor.predict(X_latest)
@@ -186,11 +190,11 @@ class AdvancedGoldTradingSystem:
         logger.info(f"Available balance: ${available_balance:.2f}")
 
         # Adjust trading parameters based on recent performance
-        self.adjust_trading_parameters(processed_data)
+        self.adjust_trading_parameters(self.processed_data)
 
         # Execute live trade if confidence is above threshold
         if confidence >= self.confidence_threshold:
-            self.execute_live_trade(final_signal, available_balance, current_volatility, processed_data['Close'].iloc[-1], liquidity_estimate, execution_quality)
+            self.execute_live_trade(final_signal, available_balance, current_volatility, self.processed_data['Close'].iloc[-1], liquidity_estimate, execution_quality)
         else:
             logger.info(f"Confidence ({confidence:.2f}) below threshold. No trade executed.")
 
@@ -266,6 +270,13 @@ class AdvancedGoldTradingSystem:
         else:
             logger.info("No trade signal. Holding current position.")
 
+        # Update execution history
+        self.execution_history = self.execution_history.append({
+            'liquidity_estimate': liquidity_estimate,
+            'actual_slippage': actual_slippage,
+            'execution_time': final_delay
+        }, ignore_index=True)
+
         # Update execution quality predictor with actual results
         self.execution_quality_predictor.update_model(latest_price, actual_execution_price, final_delay)
 
@@ -293,6 +304,9 @@ def main():
 
     # Run the system immediately
     trading_system.run()
+
+    # Start the visualization dashboard
+    trading_system.visualizer.run_dashboard()
 
     # Schedule the system to run based on trading frequency
     if config['trading_frequency'] == 'high':
