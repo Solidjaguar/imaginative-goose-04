@@ -39,6 +39,23 @@ class EnsemblePredictor:
 
         logger.info(f"Ensemble weights: {self.weights}")
 
+    def update(self, X, y):
+        logger.info("Updating ensemble predictor...")
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        predictions = {}
+        for name, model in self.models.items():
+            model.partial_fit(X_train, y_train)
+            predictions[name] = model.predict(X_val)
+
+        # Recalculate weights
+        mse = {name: mean_squared_error(y_val, pred) for name, pred in predictions.items()}
+        inv_mse = {name: 1/error for name, error in mse.items()}
+        total_inv_mse = sum(inv_mse.values())
+        self.weights = {name: value/total_inv_mse for name, value in inv_mse.items()}
+
+        logger.info(f"Updated ensemble weights: {self.weights}")
+
     def predict(self, X):
         if self.weights is None:
             raise ValueError("Model has not been trained yet. Call 'train' before making predictions.")

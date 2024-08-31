@@ -13,6 +13,7 @@ from src.backtesting.advanced_backtester import AdvancedBacktester
 from src.forward_testing.forward_tester import ForwardTester
 from src.risk_management.advanced_risk_manager import AdvancedRiskManager
 from src.optimization.hyperparameter_optimizer import HyperparameterOptimizer
+from src.utils.model_versioner import ModelVersioner
 import logging
 import schedule
 import time
@@ -48,6 +49,9 @@ class AdvancedGoldTradingSystem:
             self.ensemble_predictor, self.trading_strategy, self.risk_manager,
             self.sentiment_analyzer
         )
+        self.model_versioner = ModelVersioner()
+        self.adaptation_counter = 0
+        self.max_adaptations = 5  # Maximum number of adaptations before full retraining
 
     def run(self):
         logger.info("Starting advanced gold trading system...")
@@ -157,22 +161,40 @@ class AdvancedGoldTradingSystem:
         logger.info(f"Risk report: {risk_report}")
 
         # Save updated models
-        self.ensemble_predictor.save_model('ensemble_model.joblib')
-        best_model.save_model('best_model.joblib')
-        self.trading_strategy.save_model('rl_model.zip')
+        self.model_versioner.save_model(self.ensemble_predictor, 'ensemble_model')
+        self.model_versioner.save_model(best_model, 'best_model')
+        self.model_versioner.save_model(self.trading_strategy, 'rl_model')
 
         logger.info("Advanced trading cycle completed.")
 
     def adapt_to_drift(self, data):
         logger.info("Adapting the system to market drift...")
-        # Retrain models from scratch
+        self.adaptation_counter += 1
+        
+        if self.adaptation_counter >= self.max_adaptations:
+            logger.info("Maximum adaptations reached. Performing full retraining...")
+            self.full_retrain(data)
+        else:
+            # Partial adaptation
+            X = data.drop(['Close'], axis=1)
+            y = data['Close']
+            self.ensemble_predictor.update(X, y)
+            self.auto_model_selector.update_best_model(X, y)
+            self.trading_strategy.update(data)
+            self.pattern_detector.update(data)
+        
+        logger.info("System adapted to new market conditions.")
+
+    def full_retrain(self, data):
+        logger.info("Performing full system retraining...")
         X = data.drop(['Close'], axis=1)
         y = data['Close']
         self.ensemble_predictor.train(X, y)
         self.auto_model_selector.select_best_model(X, y)
         self.trading_strategy.train(data)
         self.pattern_detector = PatternDetector()  # Reinitialize pattern detector
-        logger.info("System adapted to new market conditions.")
+        self.adaptation_counter = 0
+        logger.info("Full system retraining completed.")
 
     def optimize_hyperparameters(self, data):
         logger.info("Starting hyperparameter optimization...")
@@ -220,5 +242,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# You can add more main script logic here as needed

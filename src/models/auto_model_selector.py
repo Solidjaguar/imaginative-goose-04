@@ -47,6 +47,24 @@ class AutoModelSelector:
 
         return self.best_model, self.best_params
 
+    def update_best_model(self, X, y):
+        logger.info("Updating best model...")
+        if self.best_model is None:
+            raise ValueError("No best model selected yet. Call 'select_best_model' first.")
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        if hasattr(self.best_model, 'partial_fit'):
+            self.best_model.partial_fit(X_train, y_train)
+        else:
+            self.best_model.fit(X_train, y_train)
+        
+        y_pred = self.best_model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        logger.info(f"Updated model performance - MSE: {mse}, R2: {r2}")
+
     def _optimize_model(self, model, X_train, y_train, X_test, y_test):
         def objective(trial):
             params = self._get_model_params(trial, model)
