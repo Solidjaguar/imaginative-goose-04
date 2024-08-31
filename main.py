@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from src.utils.data_fetcher import DataFetcher
+from src.utils.advanced_data_fetcher import AdvancedDataFetcher
 from src.utils.data_processor import DataProcessor
 from src.utils.drift_detector import DriftDetector
 from src.utils.feature_analyzer import FeatureAnalyzer
@@ -12,7 +12,7 @@ from src.models.gold_price_predictor import GoldPricePredictor
 from src.strategies.rl_trading_strategy import RLTradingStrategy
 from src.backtesting.advanced_backtester import AdvancedBacktester
 from src.forward_testing.forward_tester import ForwardTester
-from src.risk_management.risk_manager import RiskManager
+from src.risk_management.advanced_risk_manager import AdvancedRiskManager
 from src.optimization.hyperparameter_optimizer import HyperparameterOptimizer
 import logging
 import schedule
@@ -22,10 +22,10 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class AutomatedGoldTradingSystem:
+class AdvancedGoldTradingSystem:
     def __init__(self, config):
         self.config = config
-        self.data_fetcher = DataFetcher()
+        self.data_fetcher = AdvancedDataFetcher(config['alpha_vantage_api_key'])
         self.data_processor = DataProcessor()
         self.drift_detector = DriftDetector()
         self.feature_analyzer = FeatureAnalyzer()
@@ -41,7 +41,7 @@ class AutomatedGoldTradingSystem:
         self.advanced_news_analyzer = AdvancedNewsAnalyzer()
         self.price_predictor = GoldPricePredictor()
         self.trading_strategy = RLTradingStrategy()
-        self.risk_manager = RiskManager(config['initial_capital'])
+        self.risk_manager = AdvancedRiskManager(config['initial_capital'])
         self.backtester = AdvancedBacktester(self.trading_strategy, self.risk_manager, 
                                              self.sentiment_analyzer, self.economic_indicators)
         self.forward_tester = ForwardTester(self.trading_strategy, self.risk_manager, 
@@ -52,13 +52,13 @@ class AutomatedGoldTradingSystem:
         )
 
     def run(self):
-        logger.info("Starting automated gold trading system...")
+        logger.info("Starting advanced gold trading system...")
 
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365*2)  # Get two years of data
 
         # Fetch and process data
-        raw_data = self.data_fetcher.get_data(start_date, end_date)
+        raw_data = self.data_fetcher.fetch_all_data(start_date, end_date)
         processed_data = self.data_processor.process_data(raw_data)
 
         # Detect drift
@@ -66,12 +66,11 @@ class AutomatedGoldTradingSystem:
             logger.warning("Market drift detected. Adapting the system...")
             self.adapt_to_drift(processed_data)
 
-        # Get sentiment data and economic indicators
+        # Get sentiment data
         sentiment = self.sentiment_analyzer.get_combined_sentiment('gold', start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-        indicators = self.economic_indicators.get_all_indicators(start_date, end_date)
 
         # Combine all data
-        full_data = pd.concat([processed_data, pd.Series(sentiment, name='sentiment'), indicators], axis=1)
+        full_data = pd.concat([processed_data, pd.Series(sentiment, name='sentiment')], axis=1)
 
         # Optimize hyperparameters
         self.optimize_hyperparameters(full_data)
@@ -107,13 +106,14 @@ class AutomatedGoldTradingSystem:
         signal = self.trading_strategy.generate_signal(latest_data.values[0])
         logger.info(f"RL Trading signal: {signal}")
 
-        # Apply risk management
+        # Apply advanced risk management
         current_price = latest_data['Close'].values[0]
-        volatility = full_data['Close'].pct_change().std()
+        volatility = full_data['Close'].pct_change().rolling(window=20).std().iloc[-1]
         
+        self.risk_manager.update_returns(full_data['Close'].pct_change())
+
         if signal == 1:  # Buy signal
-            if self.risk_manager.can_open_position('GOLD', current_price, volatility):
-                self.risk_manager.open_position('GOLD', current_price, volatility)
+            self.risk_manager.open_position('GOLD', current_price, volatility)
         elif signal == 2:  # Sell signal
             self.risk_manager.close_position('GOLD', current_price)
 
@@ -133,7 +133,7 @@ class AutomatedGoldTradingSystem:
         self.price_predictor.save_model('best_model.joblib')
         self.trading_strategy.save_model('rl_model.zip')
 
-        logger.info("Automated trading cycle completed.")
+        logger.info("Advanced trading cycle completed.")
 
     def adapt_to_drift(self, data):
         logger.info("Adapting the system to market drift...")
@@ -146,8 +146,8 @@ class AutomatedGoldTradingSystem:
         logger.info("Starting hyperparameter optimization...")
         
         # Optimize price predictor
-        X = data.drop('target', axis=1)
-        y = data['target']
+        X = data.drop('Close', axis=1)
+        y = data['Close']
         param_distributions = {
             'n_estimators': [100, 200, 300, 400, 500],
             'max_depth': [3, 4, 5, 6, 7],
@@ -165,6 +165,7 @@ class AutomatedGoldTradingSystem:
 
 def main():
     config = {
+        'alpha_vantage_api_key': 'your_alpha_vantage_api_key',
         'news_api_key': 'your_news_api_key',
         'twitter_api_key': 'your_twitter_api_key',
         'twitter_api_secret': 'your_twitter_api_secret',
@@ -174,7 +175,7 @@ def main():
         'initial_capital': 100000  # Initial capital for risk management
     }
 
-    trading_system = AutomatedGoldTradingSystem(config)
+    trading_system = AdvancedGoldTradingSystem(config)
 
     # Run the system immediately
     trading_system.run()
