@@ -5,7 +5,8 @@ from src.utils.advanced_feature_engineering import AdvancedFeatureEngineer
 from src.utils.drift_detector import DriftDetector
 from src.utils.sentiment_analyzer import SentimentAnalyzer
 from src.utils.advanced_news_analyzer import AdvancedNewsAnalyzer
-from src.models.gold_price_predictor import GoldPricePredictor
+from src.models.ensemble_predictor import EnsemblePredictor
+from src.models.auto_model_selector import AutoModelSelector
 from src.models.pattern_detector import PatternDetector
 from src.strategies.rl_trading_strategy import RLTradingStrategy
 from src.backtesting.advanced_backtester import AdvancedBacktester
@@ -34,7 +35,8 @@ class AdvancedGoldTradingSystem:
             config['twitter_access_token_secret']
         )
         self.advanced_news_analyzer = AdvancedNewsAnalyzer()
-        self.price_predictor = GoldPricePredictor()
+        self.ensemble_predictor = EnsemblePredictor()
+        self.auto_model_selector = AutoModelSelector()
         self.pattern_detector = PatternDetector()
         self.trading_strategy = RLTradingStrategy()
         self.risk_manager = AdvancedRiskManager(config['initial_capital'])
@@ -43,7 +45,7 @@ class AdvancedGoldTradingSystem:
         self.forward_tester = ForwardTester(self.trading_strategy, self.risk_manager, 
                                             self.sentiment_analyzer)
         self.hyperparameter_optimizer = HyperparameterOptimizer(
-            self.price_predictor, self.trading_strategy, self.risk_manager,
+            self.ensemble_predictor, self.trading_strategy, self.risk_manager,
             self.sentiment_analyzer
         )
 
@@ -74,6 +76,18 @@ class AdvancedGoldTradingSystem:
         pattern_signals = self.pattern_detector.generate_trading_signals(patterns, risk_tolerance='low')
         processed_data['pattern_signal'] = pattern_signals
 
+        # Prepare data for prediction
+        X = processed_data.drop(['Close'], axis=1)
+        y = processed_data['Close']
+
+        # Automatic model selection
+        best_model, best_params = self.auto_model_selector.select_best_model(X, y)
+        logger.info(f"Best model selected: {type(best_model).__name__}")
+        logger.info(f"Best parameters: {best_params}")
+
+        # Train ensemble predictor
+        self.ensemble_predictor.train(X, y)
+
         # Optimize hyperparameters
         self.optimize_hyperparameters(processed_data)
 
@@ -97,13 +111,16 @@ class AdvancedGoldTradingSystem:
         forward_test_metrics = self.forward_tester.calculate_metrics()
         logger.info(f"Forward test metrics: {forward_test_metrics}")
 
-        # Train or update price predictor
-        self.price_predictor.train(processed_data)
-
         # Make predictions and generate trading signal
         latest_data = processed_data.iloc[-1].to_frame().T
-        prediction = self.price_predictor.predict(latest_data)
-        logger.info(f"Latest price prediction: {prediction[0]}")
+        X_latest = latest_data.drop(['Close'], axis=1)
+        
+        ensemble_prediction = self.ensemble_predictor.predict(X_latest)
+        best_model_prediction = best_model.predict(X_latest)
+        
+        # Combine predictions (you can adjust this logic based on your preference)
+        final_prediction = (ensemble_prediction + best_model_prediction) / 2
+        logger.info(f"Latest price prediction: {final_prediction[0]}")
 
         rl_signal = self.trading_strategy.generate_signal(latest_data.values[0])
         pattern_signal = pattern_signals.iloc[-1]
@@ -140,7 +157,8 @@ class AdvancedGoldTradingSystem:
         logger.info(f"Risk report: {risk_report}")
 
         # Save updated models
-        self.price_predictor.save_model('best_model.joblib')
+        self.ensemble_predictor.save_model('ensemble_model.joblib')
+        best_model.save_model('best_model.joblib')
         self.trading_strategy.save_model('rl_model.zip')
 
         logger.info("Advanced trading cycle completed.")
@@ -148,7 +166,10 @@ class AdvancedGoldTradingSystem:
     def adapt_to_drift(self, data):
         logger.info("Adapting the system to market drift...")
         # Retrain models from scratch
-        self.price_predictor.train(data, force=True)
+        X = data.drop(['Close'], axis=1)
+        y = data['Close']
+        self.ensemble_predictor.train(X, y)
+        self.auto_model_selector.select_best_model(X, y)
         self.trading_strategy.train(data)
         self.pattern_detector = PatternDetector()  # Reinitialize pattern detector
         logger.info("System adapted to new market conditions.")
@@ -156,15 +177,15 @@ class AdvancedGoldTradingSystem:
     def optimize_hyperparameters(self, data):
         logger.info("Starting hyperparameter optimization...")
         
-        # Optimize price predictor
-        X = data.drop('Close', axis=1)
+        # Optimize ensemble predictor
+        X = data.drop(['Close'], axis=1)
         y = data['Close']
         param_distributions = {
             'n_estimators': [100, 200, 300, 400, 500],
             'max_depth': [3, 4, 5, 6, 7],
             'learning_rate': [0.01, 0.1, 0.2, 0.3]
         }
-        self.price_predictor = self.hyperparameter_optimizer.optimize_price_predictor(X, y, param_distributions)
+        self.ensemble_predictor = self.hyperparameter_optimizer.optimize_ensemble_predictor(X, y, param_distributions)
 
         # Optimize trading strategy
         self.hyperparameter_optimizer.optimize_trading_strategy(data)
